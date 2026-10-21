@@ -1570,7 +1570,15 @@ async def bili_history(days: int = 30, max_items: int = 300) -> str:
             data = await user.get_self_history(
                 page_num=page, per_page_item=100, credential=cred
             )
-            rows = (data or {}).get("list") or []
+            # ⚠️ bilibili-api 17.4.2 的 get_self_history **直接返回 list**（每项一张视频卡片），
+            #    不是 {"list": [...]}；老版本/别的实现可能带一层包装 —— 两种都兼容。
+            #    （2026-10-21 真机踩到：`'list' object has no attribute 'get'`，整轮在拉历史这步就挂了）
+            if isinstance(data, list):
+                rows = data
+            elif isinstance(data, dict):
+                rows = data.get("list") or data.get("items") or []
+            else:
+                rows = []
             if not rows:
                 break
             reached_cutoff = False
@@ -1584,18 +1592,21 @@ async def bili_history(days: int = 30, max_items: int = 300) -> str:
                 if view_at and view_at < cutoff:
                     reached_cutoff = True
                     break
-                history = row.get("history") or {}
+                # 17.4.2 的卡片字段在顶层；旧版/有的实现会嵌在 history 里
+                history = row.get("history") if isinstance(row.get("history"), dict) else {}
                 bvid = row.get("bvid") or history.get("bvid") or ""
                 if not bvid:
                     # 直播 / 番剧 / 活动页没有 bvid，不是荐片的候选
                     continue
+                owner = row.get("owner") if isinstance(row.get("owner"), dict) else {}
                 progress = row.get("progress")
                 items.append({
                     "bvid": bvid,
-                    "title": row.get("title") or "",
-                    "author": row.get("author_name") or "",
-                    "cover": _cover(row.get("cover")),
-                    "duration": _as_int(row.get("duration")),
+                    "title": row.get("title") or history.get("title") or "",
+                    "author": (row.get("author_name") or owner.get("name") or owner.get("uname")
+                               or history.get("author_name") or ""),
+                    "cover": _cover(row.get("pic") or row.get("cover43") or row.get("cover") or history.get("cover")),
+                    "duration": _as_int(row.get("duration") or history.get("duration")),
                     "progress": -1 if progress is None else _as_int(progress, -1),
                     "view_at": view_at,
                 })
